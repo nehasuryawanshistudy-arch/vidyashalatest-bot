@@ -564,22 +564,33 @@ def build_result_tabs(quiz_len, current_idx=None):
     markup.row(InlineKeyboardButton("📊 FINAL SUMMARY • PREMIUM", callback_data="res_summary"))
     return markup
 
-def build_quiz_caption(uid):
+def build_quiz_caption(uid, elapsed_override=None, remaining_override=None):
     sess = sessions.get(uid)
     if not sess: return "Quiz not found"
     quiz = sess['quiz']
     q_idx = sess['current_q']
     answers = sess['answers']
     answered = sum(1 for a in answers if a is not None and a != -1)
-    caption = f"🧭 Q{q_idx+1}/{len(quiz)} | ✅ {answered}/{len(quiz)} • Premium Carousel\n"
-    caption += f"📌 +1 / -0.25 / 0 | Yellow Glow • One Attempt\n"
+    if elapsed_override is not None:
+        elapsed = elapsed_override
+    else:
+        elapsed = time.time() - sess.get('start_time', time.time())
+    if remaining_override is not None:
+        remaining = remaining_override
+    else:
+        remaining = TOTAL_QUIZ_TIME - elapsed
+    remaining = max(0, remaining)
+    mins = int(remaining // 60)
+    secs = int(remaining % 60)
+    caption = f"⏱ {mins:02d}:{secs:02d} LEFT | {int(elapsed/TOTAL_QUIZ_TIME*100)}% • ✅ {answered}/{len(quiz)}\n"
+    caption += f"🧭 Q{q_idx+1}/{len(quiz)} | +1 / -0.25 / 0\n"
     if answers[q_idx] is not None and answers[q_idx] != -1:
         opt = quiz[q_idx]['opts'][answers[q_idx]]
-        caption += f"✏️ Ans: {chr(65+answers[q_idx])}. {opt[:35]}\n"
-    caption += "👇 Palette • Yellow Highlights • Timer Above ☝️"
+        caption += f"✏️ {chr(65+answers[q_idx])}. {opt[:32]}\n"
+    caption += "👇 Yellow bar = tiny pieces • Dark = navy • No whole flicker"
     return caption
 
-def build_quiz_keyboard(uid):
+def build_quiz_keyboard(uid, elapsed_override=None, remaining_override=None):
     sess = sessions.get(uid)
     if not sess: return None
     from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -587,7 +598,28 @@ def build_quiz_keyboard(uid):
     answers = sess['answers']
     current_q = sess['current_q']
     q_idx = current_q
-    markup = InlineKeyboardMarkup(row_width=5)
+    # Time for segmented bar
+    if elapsed_override is not None:
+        elapsed = elapsed_override
+    else:
+        elapsed = time.time() - sess.get('start_time', time.time())
+    progress = min(max(elapsed / TOTAL_QUIZ_TIME, 0.0), 1.0)
+    # DIVIDE CARD INTO TINY VERTICAL PIECES - 20 pieces stacked horizontally
+    SEGMENTS = 20
+    filled = int(progress * SEGMENTS)
+    markup = InlineKeyboardMarkup(row_width=10)
+    # Row 1: first 10 pieces, Row 2: next 10 pieces = bar made of tiny cards
+    bar_pieces = []
+    for i in range(SEGMENTS):
+        if i < filled:
+            txt = "🟨"  # Yellow front - high contrast, easy understanding
+        else:
+            txt = "⬛"  # Dark navy background per branding
+        bar_pieces.append(InlineKeyboardButton(txt, callback_data="ignore_bar"))
+    # Stack one after other: 10 + 10 = 20 tiny vertical pieces
+    markup.row(*bar_pieces[:10])
+    markup.row(*bar_pieces[10:20])
+    # Palette
     palette = []
     for i in range(len(quiz)):
         if i == current_q:
@@ -650,6 +682,7 @@ def show_question(uid, q_idx, edit=False):
 
 def overall_timer_loop(uid):
     last_save = time.time()
+    last_bar_update = 0
     while active_overall_timers.get(uid, False):
         try:
             sess = sessions.get(uid)
@@ -661,35 +694,32 @@ def overall_timer_loop(uid):
             if remaining <= 0:
                 auto_submit_quiz(uid)
                 break
-            # Accurate per-question time tracking using last_entry
+            # Accurate per-question time tracking
             if 'last_entry' in sess:
                 time_spent = now - sess['last_entry']
-                # add only if positive and reasonable (<5 sec)
                 if 0 < time_spent < 5:
                     sess['q_times'][sess['current_q']] += time_spent
                 sess['last_entry'] = now
-            timer_chat_id = sess.get('timer_chat_id')
-            timer_msg_id = sess.get('timer_msg_id')
-            if timer_chat_id and timer_msg_id and bot:
-                answered = sum(1 for a in sess['answers'] if a is not None and a != -1)
-                timer_card = generate_timer_card(remaining, elapsed, TOTAL_QUIZ_TIME, answered, len(sess['quiz']))
-                try:
-                    from telebot.types import InputMediaPhoto
-                    mins = int(remaining // 60)
-                    secs = int(remaining % 60)
-                    # Caption not needed for thin bar, but keep short to avoid clutter
-                    caption = f"⏱ {mins:02d}:{secs:02d} • {int(elapsed/TOTAL_QUIZ_TIME*100)}% • Thin Yellow Bar"
-                    bot.edit_message_media(media=InputMediaPhoto(timer_card, caption=caption), chat_id=timer_chat_id, message_id=timer_msg_id)
-                except Exception as e:
-                    # Ignore edit errors (message not modified, rate limit)
-                    pass
-            # Save every 10 sec, not every sec
+            # Update tiny pieces bar every 2 sec - only caption+keyboard, no photo = no whole bar flicker
+            if now - last_bar_update >= 2:
+                chat_id = sess.get('msg_chat_id')
+                msg_id = sess.get('msg_id')
+                if chat_id and msg_id and bot:
+                    try:
+                        caption = build_quiz_caption(uid, elapsed_override=elapsed, remaining_override=remaining)
+                        keyboard = build_quiz_keyboard(uid, elapsed_override=elapsed, remaining_override=remaining)
+                        bot.edit_message_caption(caption=caption, chat_id=chat_id, message_id=msg_id, reply_markup=keyboard)
+                        last_bar_update = now
+                    except Exception as e:
+                        if "not modified" not in str(e).lower():
+                            print(f"caption edit err: {e}")
+                        last_bar_update = now
             if now - last_save > 10:
                 save_sessions()
                 last_save = now
         except Exception as e:
             print(f"timer error {uid}: {e}")
-        time.sleep(2)  # 2 sec = much less flicker, still feels live
+        time.sleep(1)
 
 def auto_submit_quiz(uid):
     sess = sessions.get(uid)
@@ -762,19 +792,14 @@ def start_new_quiz(uid, username):
         'username': username,
         'finished': False,
         'msg_chat_id': None,
-        'msg_id': None,
-        'timer_chat_id': None,
-        'timer_msg_id': None
+        'msg_id': None
     }
     sessions[uid] = sess
     try:
-        timer_card = generate_timer_card(TOTAL_QUIZ_TIME, 0, TOTAL_QUIZ_TIME, 0, len(quiz))
-        timer_msg = bot.send_photo(uid, timer_card, caption=f"⏱ 07:00 LEFT | Premium Glow Bar")
-        sess['timer_chat_id'] = timer_msg.chat.id
-        sess['timer_msg_id'] = timer_msg.message_id
+        # NO timer image - timer is now 20 tiny pieces (🟨/⬛) stacked as buttons - no whole bar flicker
         q_card = generate_question_card_premium(0, len(quiz), quiz[0]['q'])
-        caption = build_quiz_caption(uid)
-        keyboard = build_quiz_keyboard(uid)
+        caption = build_quiz_caption(uid, elapsed_override=0, remaining_override=TOTAL_QUIZ_TIME)
+        keyboard = build_quiz_keyboard(uid, elapsed_override=0, remaining_override=TOTAL_QUIZ_TIME)
         msg = bot.send_photo(uid, q_card, caption=caption, reply_markup=keyboard)
         sess['msg_chat_id'] = msg.chat.id
         sess['msg_id'] = msg.message_id
@@ -843,7 +868,10 @@ if bot:
             return
         if data == "start_test_full" or data == "start_test":
             start_new_quiz(uid, username)
-            bot.answer_callback_query(call.id, "Premium test started! 2 cards")
+            bot.answer_callback_query(call.id, "Started! Dark + Yellow pieces, no flicker")
+        elif data == "ignore_bar":
+            bot.answer_callback_query(call.id, "⏱ Time progress • Dark navy + Yellow")
+            return
         elif data == "continue_quiz":
             sess = sessions.get(uid)
             if not sess: return
@@ -852,20 +880,17 @@ if bot:
                 auto_submit_quiz(uid)
                 return
             sess['last_entry'] = time.time()
-            timer_card = generate_timer_card(remaining, TOTAL_QUIZ_TIME-remaining, TOTAL_QUIZ_TIME, sum(1 for a in sess['answers'] if a is not None and a!=-1), len(sess['quiz']))
+            elapsed = TOTAL_QUIZ_TIME - remaining
             q_card = generate_question_card_premium(sess['current_q'], len(sess['quiz']), sess['quiz'][sess['current_q']]['q'])
-            caption = build_quiz_caption(uid)
-            keyboard = build_quiz_keyboard(uid)
+            caption = build_quiz_caption(uid, elapsed_override=elapsed, remaining_override=remaining)
+            keyboard = build_quiz_keyboard(uid, elapsed_override=elapsed, remaining_override=remaining)
             try:
-                timer_msg = bot.send_photo(uid, timer_card, caption=f"⏱ {int(remaining//60):02d}:{int(remaining%60):02d} LEFT | Resumed Premium")
-                sess['timer_chat_id'] = timer_msg.chat.id
-                sess['timer_msg_id'] = timer_msg.message_id
                 msg = bot.send_photo(uid, q_card, caption=caption, reply_markup=keyboard)
                 sess['msg_chat_id'] = msg.chat.id
                 sess['msg_id'] = msg.message_id
                 active_overall_timers[uid] = True
                 threading.Thread(target=overall_timer_loop, args=(uid,), daemon=True).start()
-                bot.answer_callback_query(call.id, "Resumed Premium!")
+                bot.answer_callback_query(call.id, "Resumed! Pieces bar")
             except Exception as e:
                 print(f"continue error {e}")
         elif data.startswith("nav_q_"):

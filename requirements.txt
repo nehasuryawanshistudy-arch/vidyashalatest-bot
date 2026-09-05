@@ -1,4 +1,4 @@
 pyTelegramBotAPI
 Flask
-Pillow>=11.0.0
-requ
+Pillow
+requests

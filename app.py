@@ -1,5 +1,5 @@
 import os, time, threading, io, csv, requests
-from flask import Flask
+from flask import Flask, request, abort
 from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
@@ -9,21 +9,22 @@ SHEET_ID = "1921UYtW2eka524IVrcrJYkGyzoz_qUbPHJKCePdftlA"
 SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-print(f"BOT_TOKEN present: {bool(BOT_TOKEN)}")
+RENDER_URL = os.getenv('RENDER_EXTERNAL_URL')  # e.g. https://your-bot.onrender.com
 
-# Safe bot init - don't crash if token missing
+print(f"BOT_TOKEN present: {bool(BOT_TOKEN)} | RENDER_URL: {RENDER_URL}")
+
 bot = None
 if BOT_TOKEN and ":" in BOT_TOKEN:
     try:
         import telebot
-        from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+        from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, Update
         bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
         print("Bot initialized OK")
     except Exception as e:
         print(f"Bot init failed: {e}")
         bot = None
 else:
-    print("BOT_TOKEN missing or invalid format - Flask will still run, bot disabled")
+    print("BOT_TOKEN missing - bot disabled")
     bot = None
 
 sessions, best_times, active_timers, timer_msg = {}, {}, {}, {}
@@ -221,26 +222,77 @@ if bot:
                 bot.answer_callback_query(call.id, result)
             threading.Thread(target=send_next, args=(uid,q_idx+1), daemon=True).start()
 
+# ---- WEBHOOK MODE (fixes 409 Conflict) ----
 @app.route('/')
 def home():
-    return f"Vidyashala bot OK - token set: {bool(BOT_TOKEN and ':' in BOT_TOKEN)} - bot active: {bot is not None}"
+    mode = "webhook" if RENDER_URL else "polling"
+    return f"Vidyashala bot OK - mode:{mode} token:{bool(BOT_TOKEN)} bot:{bot is not None}"
 
-def run_bot():
+@app.route('/webhook', methods=['POST'])
+def webhook():
     if not bot:
-        print("Bot disabled - no valid token, Flask will keep running")
+        return 'bot disabled', 200
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        try:
+            update = Update.de_json(json_string)
+            bot.process_new_updates([update])
+        except Exception as e:
+            print(f"Webhook process error: {e}")
+        return '', 200
+    else:
+        abort(403)
+
+def setup_webhook():
+    if not bot or not RENDER_URL:
+        print("No RENDER_URL, using polling mode")
+        return False
+    try:
+        # Delete old webhook/polling
+        bot.delete_webhook()
+        time.sleep(1)
+        url = RENDER_URL.rstrip('/') + '/webhook'
+        print(f"Setting webhook to {url}")
+        bot.set_webhook(url=url, drop_pending_updates=True)
+        print("Webhook set OK - 409 conflict fixed")
+        return True
+    except Exception as e:
+        print(f"Webhook setup failed: {e}, falling back to polling")
+        return False
+
+def run_polling():
+    if not bot:
         return
+    # If webhook mode active, don't poll
+    if RENDER_URL:
+        print("RENDER_URL exists, skipping polling (webhook mode)")
+        return
+    print("Starting polling mode (no RENDER_URL)")
     while True:
         try:
             bot.delete_webhook(drop_pending_updates=True)
             time.sleep(2)
-            bot.infinity_polling(timeout=10, long_polling_timeout=10)
+            bot.infinity_polling(timeout=10, long_polling_timeout=10, skip_pending=True)
         except Exception as e:
-            print(f"Bot polling error: {e}"); time.sleep(5)
+            # Handle 409 Conflict specifically - wait longer
+            err_str = str(e)
+            if "409" in err_str or "Conflict" in err_str:
+                print(f"409 Conflict detected (another instance running) - waiting 20s: {e}")
+                time.sleep(20)
+            else:
+                print(f"Bot polling error: {e}")
+                time.sleep(5)
 
+# Start appropriate mode
 if bot:
-    threading.Thread(target=run_bot, daemon=True).start()
-else:
-    print("Skipping bot thread - invalid token")
+    if RENDER_URL:
+        # Webhook mode - set webhook in background after Flask starts
+        def init_webhook():
+            time.sleep(3)  # wait Flask
+            setup_webhook()
+        threading.Thread(target=init_webhook, daemon=True).start()
+    else:
+        threading.Thread(target=run_polling, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))

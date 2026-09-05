@@ -140,3 +140,30 @@ def handle_all(call):
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{'✅ CORRECT ANSWER!' if is_correct else '❌ WRONG ANSWER!'}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"```\n{qdata['q']}\n```\n\n"
+            f"Correct: {chr(65+qdata['ans'])} : {qdata['opts'][qdata['ans']]}\n"
+            f"Your Choice: {chr(65+opt_idx)} : {qdata['opts'][opt_idx]}\n\n"
+            f"Next question in 1 sec..."
+        )
+        try:
+            bot.edit_message_text(res_text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        except:
+            pass
+        bot.answer_callback_query(call.id, "Answer Saved!")
+        threading.Thread(target=send_next, args=(uid, q_idx+1), daemon=True).start()
+
+@app.route('/')
+def home():
+    return "Vidyashala Beautiful Bot OK"
+
+def run_bot():
+    while True:
+        try:
+            bot.delete_webhook(drop_pending_updates=True)
+            time.sleep(2)
+            bot.infinity_polling(timeout=10, long_polling_timeout=10)
+        except Exception as e:
+            print(f"Retry {e}")
+            time.sleep(5)
+
+threading.Thread(target=run_bot, daemon=True).start()

@@ -1,4 +1,4 @@
-pyTelegramBotAPI==4.12.0
-Flask==2.3.3
-Pillow==10.0.0
-requests==2.31.0
+pyTelegramBotAPI
+Flask
+Pillow>=11.0.0
+requ

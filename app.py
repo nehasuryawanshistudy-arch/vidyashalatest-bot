@@ -1,16 +1,16 @@
-import os, time, csv, threading
+import os, time, threading
 import telebot
 from flask import Flask
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-BOT_TOKEN = os.environ['BOT_TOKEN']
-bot = telebot.TeleBot(BOT_TOKEN)
-start_times = {}
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 app = Flask(__name__)
 
 QUESTION = "SI on 15k for 2yr @10% is 3000. CI is?"
 OPTIONS = ["3150", "3300", "3000", "3200"]
 CORRECT = 0
+start_times = {}
 
 @bot.message_handler(commands=['quiz'])
 def send_hidden_quiz(message):
@@ -30,19 +30,25 @@ def handle_click(call):
         elapsed = time.time() - start_times.get(uid, time.time())
         ans = int(call.data.split("_")[1])
         is_correct = ans == CORRECT
-        with open("times.csv", "a", newline="") as f:
-            csv.writer(f).writerow([uid, call.from_user.username, f"{elapsed:.2f}", is_correct])
         result = "✅ Correct!" if is_correct else f"❌ Wrong! Ans: {OPTIONS[CORRECT]}"
         bot.edit_message_text(f"{result}\n⏱️ Your Time: {elapsed:.2f}s", call.message.chat.id, call.message.message_id)
         bot.answer_callback_query(call.id, f"Time: {elapsed:.2f}s")
 
 @app.route('/')
 def home():
-    return "Vidyashala Bot Running"
+    return "Vidyashala Bot Running - OK"
 
 def run_bot():
-    bot.infinity_polling()
+    while True:
+        try:
+            print("Deleting old webhook...")
+            bot.delete_webhook(drop_pending_updates=True)
+            bot.remove_webhook()
+            time.sleep(3)
+            print("Starting polling - single instance")
+            bot.infinity_polling(timeout=10, long_polling_timeout=10, skip_pending=True)
+        except Exception as e:
+            print(f"Polling conflict, retrying in 10 sec: {e}")
+            time.sleep(10)
 
-if __name__ == "__main__":
-    threading.Thread(target=run_bot).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+threading.Thread(target=run_bot, daemon=True).start()

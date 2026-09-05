@@ -4,7 +4,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
-BRAND = {"YELLOW":(255,193,7), "BLUE":(11,61,179), "NAVY":(10,25,49), "WHITE":(255,255,255)}
+BRAND = {"YELLOW":(255,193,7), "BLUE":(11,61,179), "NAVY":(10,25,49), "WHITE":(255,255,255), "LIGHT_NAVY":(21,43,82)}
 SHEET_ID = "1921UYtW2eka524IVrcrJYkGyzoz_qUbPHJKCePdftlA"
 SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 
@@ -17,7 +17,7 @@ bot = None
 if BOT_TOKEN and ":" in BOT_TOKEN:
     try:
         import telebot
-        from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, Update
+        from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, Update, InputMediaPhoto
         bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
         print("Bot initialized OK")
     except Exception as e:
@@ -64,83 +64,131 @@ def load_font(size, bold=False):
     except:
         return ImageFont.load_default()
 
+def draw_correct_logo(draw, cx, cy, radius, bg=YELLOW, tick_color=None):
+    # Correct Vidyashala logo: Yellow circle + Blue thick checkmark (✓)
+    if tick_color is None:
+        tick_color = BRAND["BLUE"]
+    draw.ellipse((cx-radius, cy-radius, cx+radius, cy+radius), fill=BRAND["YELLOW"])
+    # Draw a proper checkmark with thick lines - looks like √ but proper ✓
+    # Use 2 lines forming tick
+    x1 = cx - radius*0.35
+    y1 = cy + radius*0.05
+    x2 = cx - radius*0.05
+    y2 = cy + radius*0.35
+    x3 = cx + radius*0.45
+    y3 = cy - radius*0.30
+    # thickness proportional to radius
+    w = max(8, int(radius*0.12))
+    draw.line([(x1,y1),(x2,y2)], fill=tick_color, width=w, joint="round")
+    draw.line([(x2,y2),(x3,y3)], fill=tick_color, width=w, joint="round")
+
 def generate_launch_card():
     W,H = 1080,1350
     img = Image.new("RGB", (W,H), BRAND["NAVY"])
     draw = ImageDraw.Draw(img)
+    # Subtle background pattern - light navy circles
+    for i in range(0, W, 200):
+        for j in range(200, H, 200):
+            draw.ellipse((i-20, j-20, i+20, j+20), fill=BRAND["LIGHT_NAVY"])
+    # Big centered logo - CORRECTED
     cx,cy = W//2, 420
-    draw.ellipse((cx-150, cy-150, cx+150, cy+150), fill=BRAND["YELLOW"])
-    draw.text((cx-20, cy-60), "V", fill=BRAND["BLUE"], font=load_font(130, True), anchor="mm")
-    draw.ellipse((60,40,140,120), fill=BRAND["YELLOW"])
-    draw.text((100,80), "V", fill=BRAND["BLUE"], font=load_font(40, True), anchor="mm")
-    draw.text((160,50), "VIDYASHALA", fill=BRAND["WHITE"], font=load_font(22, True))
-    draw.text((160,75), "BANKING | INSURANCE", fill=BRAND["YELLOW"], font=load_font(18, True))
-    draw.text((W//2, 720), "Take a Diagnostic Test", fill=BRAND["WHITE"], font=load_font(56, True), anchor="mm")
-    draw.text((W//2, 800), "It's a time based test so be ready!", fill=BRAND["YELLOW"], font=load_font(30, True), anchor="mm")
+    draw_correct_logo(draw, cx, cy, 150)
+    # Small top left logo - CORRECTED
+    draw_correct_logo(draw, 100, 80, 35)
+    draw.text((160,50), "VIDYASHALA", fill=BRAND["WHITE"], font=load_font(24, True))
+    draw.text((160,80), "BANKING | INSURANCE | SSC", fill=BRAND["YELLOW"], font=load_font(16, True))
+    # Title
+    draw.text((W//2, 700), "Take a Diagnostic Test", fill=BRAND["WHITE"], font=load_font(54, True), anchor="mm")
+    draw.text((W//2, 770), "It's a time based test so be ready!", fill=BRAND["YELLOW"], font=load_font(30, True), anchor="mm")
+    # Attractive CTA button with shadow
+    draw.rounded_rectangle((W//2-230, 1020-4, W//2+230, 1090+4), radius=32, fill=(0,0,0,60))
     draw.rounded_rectangle((W//2-220, 1020, W//2+220, 1090), radius=30, fill=BRAND["YELLOW"])
-    draw.text((W//2, 1055), "TAP TO START", fill=BRAND["NAVY"], font=load_font(32, True), anchor="mm")
+    draw.text((W//2, 1055), "TAP TO START ▶", fill=BRAND["NAVY"], font=load_font(32, True), anchor="mm")
+    # Bottom trust line
+    draw.text((W//2, 1220), "Trusted by 10k+ Banking Aspirants", fill=BRAND["WHITE"], font=load_font(20, True), anchor="mm")
     buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
 
-# NEW: Clickable-card style - image shows ONLY question, no options drawn
-def generate_question_card_clickable(q_idx, total, question):
-    W,H = 1080, 1080  # shorter, so buttons are immediately visible
+def generate_question_card_clickable(q_idx, total, question, elapsed=0.0):
+    W,H = 1080, 1150
     img = Image.new("RGB", (W,H), BRAND["NAVY"])
     draw = ImageDraw.Draw(img)
-    # Top badges
-    draw.rounded_rectangle((60,40,260,100), radius=20, fill=BRAND["YELLOW"])
-    draw.text((160,70), f"Q{q_idx+1}/{total}", fill=BRAND["NAVY"], font=load_font(26, True), anchor="mm")
-    draw.rounded_rectangle((W-260,40,W-60,100), radius=20, fill=BRAND["WHITE"])
-    draw.text((W-160,70), "CHOOSE BELOW", fill=BRAND["NAVY"], font=load_font(18, True), anchor="mm")
-    # Big logo
-    cx,cy = W//2, 260
-    draw.ellipse((cx-110, cy-110, cx+110, cy+110), fill=BRAND["YELLOW"])
-    draw.text((cx, cy+5), "V", fill=BRAND["BLUE"], font=load_font(110, True), anchor="mm")
-    # Question - centered, large
-    f_q = load_font(48, True)
-    # Wrap question into lines
+    # Background subtle dots
+    for i in range(0, W, 180):
+        for j in range(150, H, 180):
+            draw.ellipse((i-15, j-15, i+15, j+15), fill=BRAND["LIGHT_NAVY"])
+    # Top bar - Q badge
+    draw.rounded_rectangle((50,35,270,95), radius=18, fill=BRAND["YELLOW"])
+    draw.text((160,65), f"Q {q_idx+1} / {total}", fill=BRAND["NAVY"], font=load_font(22, True), anchor="mm")
+    # Top bar - LIVE TIMER INSIDE CARD (attractive)
+    # Timer pill with pulsing red dot effect
+    timer_text = f"⏱ {elapsed:.1f}s LIVE"
+    # Background pill
+    tw = draw.textlength(timer_text, font=load_font(20, True)) + 80
+    x2 = W-50
+    x1 = x2 - tw
+    draw.rounded_rectangle((x1,35,x2,95), radius=18, fill=BRAND["WHITE"])
+    # Red dot
+    draw.ellipse((x1+18, 52, x1+34, 68), fill=(255,59,48))
+    draw.text((x1+48,65), timer_text, fill=BRAND["NAVY"], font=load_font(20, True), anchor="lm")
+    # Center logo - CORRECTED LOGO
+    cx,cy = W//2, 250
+    draw_correct_logo(draw, cx, cy, 85)
+    # Progress bar under logo - attractive animated bar based on elapsed
+    bar_w = 400
+    bar_h = 8
+    bx1 = cx - bar_w//2
+    by1 = cy + 110
+    # Track
+    draw.rounded_rectangle((bx1, by1, bx1+bar_w, by1+bar_h), radius=4, fill=(255,255,255,40))
+    # Fill - grows with time (mod 10s for loop effect)
+    progress = (elapsed % 10) / 10.0
+    fill_w = int(bar_w * progress)
+    draw.rounded_rectangle((bx1, by1, bx1+fill_w, by1+bar_h), radius=4, fill=BRAND["YELLOW"])
+    # Question - big, bold, centered
+    f_q = load_font(46, True)
     words = question.split()
     lines = []
     cur = ""
     for w in words:
         test = cur + " " + w if cur else w
-        if draw.textlength(test, font=f_q) < W-120:
+        if draw.textlength(test, font=f_q) < W-100:
             cur = test
         else:
             lines.append(cur)
             cur = w
     if cur:
         lines.append(cur)
-    # Limit to 4 lines, center vertically
-    y = 460
+    y = 430
     if len(lines) > 4:
-        # truncate with ...
         lines = lines[:4]
-        lines[-1] = lines[-1][:30] + "..."
+        lines[-1] = lines[-1][:35] + "..."
     for line in lines:
+        # Text with subtle shadow for attractiveness
+        draw.text((W//2+2, y+2), line, fill=(0,0,0,100), font=f_q, anchor="mm")
         draw.text((W//2, y), line, fill=BRAND["WHITE"], font=f_q, anchor="mm")
-        y += 70
-    # Hint text
-    draw.text((W//2, y+60), "Tap an option button below", fill=BRAND["YELLOW"], font=load_font(28, True), anchor="mm")
+        y += 68
+    # Bottom hint - attractive
+    draw.rounded_rectangle((W//2-200, y+40, W//2+200, y+85), radius=20, fill=BRAND["YELLOW"])
+    draw.text((W//2, y+62), "👇 TAP YOUR ANSWER BELOW", fill=BRAND["NAVY"], font=load_font(20, True), anchor="mm")
+    # Footer small branding
+    draw.text((W//2, H-40), "VIDYASHALA • Speed + Accuracy", fill=(255,255,255,120), font=load_font(16, True), anchor="mm")
     buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
 
 def get_q_caption(q_idx, elapsed, total):
-    return f"Q{q_idx+1}/{total} | ⏱ {elapsed:.1f}s | Tap your answer below"
+    return f"Q{q_idx+1}/{total} | ⏱ {elapsed:.1f}s LIVE | Choose below 👇"
 
 def build_clickable_markup(q_idx, opts):
-    # Build REAL clickable buttons - each option is a Telegram InlineKeyboardButton
     from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
     markup = InlineKeyboardMarkup(row_width=1)
-    # Emojis for A-E
     emojis = ["🅰️","🅱️","🅲","🅳","🅴"]
     for i,opt in enumerate(opts):
-        if not opt:
-            continue
-        # Button text IS the option - this is what makes it "clickable card"
-        btn_text = f"{emojis[i]} {opt}"
+        if not opt: continue
+        btn_text = f"{emojis[i]}  {opt}"
         markup.add(InlineKeyboardButton(btn_text, callback_data=f"ans_{q_idx}_{i}"))
     return markup
 
 def live_updater(uid, total):
+    # Now updates BOTH image (timer inside card) and caption - looks premium
     while active_timers.get(uid):
         try:
             cur = sessions[uid]['cur']
@@ -148,13 +196,20 @@ def live_updater(uid, total):
             chat_id, msg_id = timer_msg.get(uid,(None,None))
             if not chat_id: break
             quiz = get_quiz()
+            # Regenerate card with live timer INSIDE image
+            card = generate_question_card_clickable(cur, total, quiz[cur]['q'], elapsed)
             markup = build_clickable_markup(cur, quiz[cur]['opts'])
             if bot:
-                bot.edit_message_caption(caption=get_q_caption(cur, elapsed, total), chat_id=chat_id, message_id=msg_id, reply_markup=markup)
+                # Edit media (image with timer) - this makes timer appear inside card
+                from telebot.types import InputMediaPhoto
+                bot.edit_message_media(media=InputMediaPhoto(card, caption=get_q_caption(cur, elapsed, total)), chat_id=chat_id, message_id=msg_id, reply_markup=markup)
         except Exception as e:
-            # print(f"Live updater error: {e}")
-            pass
-        time.sleep(0.8)
+            # If media edit fails (rate limit), fallback to caption edit
+            try:
+                if bot:
+                    bot.edit_message_caption(caption=get_q_caption(cur, elapsed, total), chat_id=chat_id, message_id=msg_id, reply_markup=markup)
+            except: pass
+        time.sleep(1.0)
 
 def send_question(uid, q_idx):
     if not bot: return
@@ -162,7 +217,7 @@ def send_question(uid, q_idx):
     sessions[uid]['cur']=q_idx; sessions[uid]['start']=time.time(); active_timers[uid]=True
     total=len(quiz); q=quiz[q_idx]
     markup = build_clickable_markup(q_idx, q['opts'])
-    card = generate_question_card_clickable(q_idx, total, q['q'])
+    card = generate_question_card_clickable(q_idx, total, q['q'], 0.0)
     msg = bot.send_photo(uid, card, caption=get_q_caption(q_idx,0.0,total), reply_markup=markup)
     timer_msg[uid]=(msg.chat.id, msg.message_id)
     threading.Thread(target=live_updater, args=(uid,total), daemon=True).start()
@@ -212,7 +267,7 @@ if bot:
         card=generate_launch_card()
         try:
             bot.send_photo("@vidyashalatest", card, caption=caption, reply_markup=markup)
-            bot.reply_to(message, "Posted to @vidyashalatest")
+            bot.reply_to(message, "Posted to @vidyashalatest - logo fixed ✅")
         except Exception as e:
             bot.reply_to(message, f"Make bot admin in channel: {e}")
 
@@ -244,7 +299,7 @@ if bot:
 @app.route('/')
 def home():
     mode = "webhook" if RENDER_URL else "polling"
-    return f"Vidyashala bot OK - CLICKABLE MODE - mode:{mode} token:{bool(BOT_TOKEN)} bot:{bot is not None}"
+    return f"Vidyashala bot OK - PREMIUM TIMER INSIDE CARD - mode:{mode}"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -256,14 +311,13 @@ def webhook():
             update = Update.de_json(json_string)
             bot.process_new_updates([update])
         except Exception as e:
-            print(f"Webhook process error: {e}")
+            print(f"Webhook error: {e}")
         return '', 200
     else:
         abort(403)
 
 def setup_webhook():
     if not bot or not RENDER_URL:
-        print("No RENDER_URL, using polling mode")
         return False
     try:
         bot.delete_webhook()
@@ -286,12 +340,9 @@ def run_polling():
             time.sleep(2)
             bot.infinity_polling(timeout=10, long_polling_timeout=10, skip_pending=True)
         except Exception as e:
-            err_str = str(e)
-            if "409" in err_str:
-                print(f"409 Conflict - waiting 20s: {e}")
+            if "409" in str(e):
                 time.sleep(20)
             else:
-                print(f"Polling error: {e}")
                 time.sleep(5)
 
 if bot:
@@ -305,5 +356,4 @@ if bot:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    print(f"Starting Flask on port {port}")
     app.run(host="0.0.0.0", port=port)

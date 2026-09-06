@@ -106,49 +106,51 @@ def fetch_questions_extended():
                     if not q_text:
                         continue
                     opts = [
-                    (row.get('Option A') or '').strip(),
-                    (row.get('Option B') or '').strip(),
-                    (row.get('Option C') or '').strip(),
-                    (row.get('Option D') or '').strip(),
-                    (row.get('Option E') or '').strip(),
-                ]
-                opts = [o for o in opts if o]
-                if len(opts) < 2:
-                    continue
-                ans_letter = (row.get('Correct Answer (A/B/C/D/E)') or row.get('Correct Answer') or 'A').strip().upper()
-                ans_map = {'A':0,'B':1,'C':2,'D':3,'E':4}
-                ans = ans_map.get(ans_letter[0], 0) if ans_letter else 0
-                if ans >= len(opts):
-                    ans = 0
-                q_id = (row.get('Question ID') or f"Q{idx+1:04d}").strip()
-                chapter = (row.get('Chapter') or 'General').strip()
-                topic = (row.get('Topic') or 'General').strip()
-                subtopic = (row.get('Subtopic') or topic).strip()
-                knowledge_nodes = (row.get('Knowledge Nodes') or topic).strip()
-                difficulty = (row.get('Difficulty') or 'Medium').strip()
-                solution = (row.get('Solution') or row.get('Explanation') or '').strip()
-                solution_link = (row.get('Solution Link') or '').strip()
-                video_title = (row.get('Video Title') or '').strip()
-                quiz.append({
-                    "id": q_id,
-                    "q": q_text,
-                    "opts": opts,
-                    "ans": ans,
-                    "chapter": chapter,
-                    "topic": topic,
-                    "subtopic": subtopic,
-                    "knowledge_nodes": knowledge_nodes,
-                    "difficulty": difficulty,
-                    "solution": solution,
-                    "solution_link": solution_link,
-                    "video_title": video_title,
-                })
-            print(f"Loaded {len(quiz)} Qs from sheet via {csv_url[:50]}")
-            if quiz:
-                return quiz
-        except Exception as e:
-            print(f"Fetch attempt failed for {csv_url[:50]}: {e}")
-            continue
+                        (row.get('Option A') or '').strip(),
+                        (row.get('Option B') or '').strip(),
+                        (row.get('Option C') or '').strip(),
+                        (row.get('Option D') or '').strip(),
+                        (row.get('Option E') or '').strip(),
+                    ]
+                    opts = [o for o in opts if o]
+                    if len(opts) < 2:
+                        continue
+                    ans_letter = (row.get('Correct Answer (A/B/C/D/E)') or row.get('Correct Answer') or 'A').strip().upper()
+                    ans_map = {'A':0,'B':1,'C':2,'D':3,'E':4}
+                    ans = ans_map.get(ans_letter[0], 0) if ans_letter else 0
+                    if ans >= len(opts):
+                        ans = 0
+                    q_id = (row.get('Question ID') or f"Q{idx+1:04d}").strip()
+                    chapter = (row.get('Chapter') or 'General').strip()
+                    topic = (row.get('Topic') or 'General').strip()
+                    subtopic = (row.get('Subtopic') or topic).strip()
+                    knowledge_nodes = (row.get('Knowledge Nodes') or topic).strip()
+                    difficulty = (row.get('Difficulty') or 'Medium').strip()
+                    solution = (row.get('Solution') or row.get('Explanation') or '').strip()
+                    solution_link = (row.get('Solution Link') or '').strip()
+                    video_title = (row.get('Video Title') or '').strip()
+                    quiz.append({
+                        "id": q_id,
+                        "q": q_text,
+                        "opts": opts,
+                        "ans": ans,
+                        "chapter": chapter,
+                        "topic": topic,
+                        "subtopic": subtopic,
+                        "knowledge_nodes": knowledge_nodes,
+                        "difficulty": difficulty,
+                        "solution": solution,
+                        "solution_link": solution_link,
+                        "video_title": video_title,
+                    })
+                print(f"Loaded {len(quiz)} Qs from sheet {sid} via {csv_url[:50]}")
+                if quiz:
+                    return quiz
+            except Exception as e:
+                print(f"Fetch attempt failed for {csv_url[:50]}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
     print("All sheet URLs failed - sheet is PRIVATE or not shared. Using FALLBACK. FIX: Share sheet as Anyone with link Viewer")
     return None
 

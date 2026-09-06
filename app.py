@@ -1,4 +1,4 @@
-import os, time, threading, io, csv, requests, json
+import os, time, threading, io, csv, requests, json, base64
 from datetime import datetime
 from flask import Flask, request, abort
 from PIL import Image, ImageDraw, ImageFont
@@ -15,17 +15,13 @@ BRAND = {
     "GRAY":(116,125,140),
 }
 
-# PREMIUM SHEET - NEW ID (6 tabs: Questions with YT links, UserResponses, UserBlocks, TopicsMaster, AnalyticsSummary, FacebookQueue)
 SHEET_ID = "1nwr_eF3tQ2_EuQqdo1SjucsiM6S3y3TSqtYFya-0ybA"
 SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 
-# FACEBOOK - PAUSED (Telegram only mode)
 FB_ENABLED = False
 PAUSE_FB = True
 
-# Optional webhook for auto-logging to Google Sheets (set in Render env vars if you want UserResponses auto-filled)
 USER_DATA_WEBHOOK_URL = os.getenv('USER_DATA_WEBHOOK_URL', '')
-
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 RENDER_URL = os.getenv('RENDER_EXTERNAL_URL')
 
@@ -39,7 +35,8 @@ def get_embedded_logo(size):
         img = Image.open(io.BytesIO(data)).convert("RGBA")
         img = img.resize((size, size), Image.LANCZOS)
         return img
-    except:
+    except Exception as e:
+        print(f"Logo decode failed: {e}")
         img = Image.new("RGBA", (size, size), (0,0,0,0))
         draw = ImageDraw.Draw(img)
         draw.ellipse((0,0,size,size), fill=BRAND["YELLOW"])
@@ -51,7 +48,7 @@ def load_font(size, bold=False):
     except:
         return ImageFont.load_default()
 
-print(f"BOT OK Telegram-Only | Sheet {SHEET_ID} | Logo {len(LOGO_B64)} chars | FB PAUSED")
+print(f"BOT OK Telegram-Only | Sheet {SHEET_ID} | Logo {len(LOGO_B64)} chars")
 
 bot = None
 if BOT_TOKEN and ":" in BOT_TOKEN:
@@ -59,194 +56,261 @@ if BOT_TOKEN and ":" in BOT_TOKEN:
         import telebot
         from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
         bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
-        print("Bot initialized")
+        print("Bot initialized OK")
     except Exception as e:
-        print(f"Bot fail {e}")
+        print(f"Bot init fail: {e}")
         bot = None
 else:
-    print("BOT_TOKEN missing - set it in Render")
+    print("BOT_TOKEN missing or invalid - set it in Render env")
 
 sessions = {}
-best_times = {}
 active_timers = {}
 timer_msg = {}
 result_msg = {}
-user_data_store = {}
 
-# ---------- FETCH WITH EXTENDED COLUMNS (YT LINKS) ----------
 def fetch_questions_extended():
-    try:
-        r = requests.get(SHEET_CSV_URL, timeout=15)
-        r.raise_for_status()
-        reader = csv.DictReader(io.StringIO(r.text))
-        quiz = []
-        for idx, row in enumerate(reader):
-            q_text = (row.get('Question') or '').strip()
-            if not q_text:
+    urls_to_try = [
+        f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv",
+        f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0",
+        f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Questions",
+        f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv",
+    ]
+    for csv_url in urls_to_try:
+        try:
+            print(f"Fetching sheet {SHEET_ID} via {csv_url[:70]}...")
+            r = requests.get(csv_url, timeout=15)
+            print(f"Sheet status {r.status_code}, len {len(r.text)}")
+            if r.status_code == 401 or r.status_code == 403:
+                print(f"Got {r.status_code} - Sheet is PRIVATE! Need Anyone with link Viewer - trying next URL")
                 continue
-            opts = [
-                (row.get('Option A') or '').strip(),
-                (row.get('Option B') or '').strip(),
-                (row.get('Option C') or '').strip(),
-                (row.get('Option D') or '').strip(),
-                (row.get('Option E') or '').strip(),
-            ]
-            opts = [o for o in opts if o]
-            ans_letter = (row.get('Correct Answer (A/B/C/D/E)') or row.get('Correct Answer') or 'A').strip().upper()
-            ans_map = {'A':0,'B':1,'C':2,'D':3,'E':4}
-            ans = ans_map.get(ans_letter[0], 0) if ans_letter else 0
-            if ans >= len(opts):
-                ans = 0
-            q_id = (row.get('Question ID') or f"Q{idx+1:04d}").strip()
-            chapter = (row.get('Chapter') or 'General').strip()
-            topic = (row.get('Topic') or 'General').strip()
-            subtopic = (row.get('Subtopic') or topic).strip()
-            knowledge_nodes = (row.get('Knowledge Nodes') or topic).strip()
-            difficulty = (row.get('Difficulty') or 'Medium').strip()
-            solution = (row.get('Solution') or row.get('Explanation') or '').strip()
-            solution_link = (row.get('Solution Link') or '').strip()
-            video_title = (row.get('Video Title') or '').strip()
-            
-            quiz.append({
-                "id": q_id,
-                "q": q_text,
-                "opts": opts,
-                "ans": ans,
-                "chapter": chapter,
-                "topic": topic,
-                "subtopic": subtopic,
-                "knowledge_nodes": knowledge_nodes,
-                "difficulty": difficulty,
-                "solution": solution,
-                "solution_link": solution_link,
-                "video_title": video_title,
-            })
-        print(f"Loaded {len(quiz)} Qs from sheet")
-        return quiz if quiz else None
-    except Exception as e:
-        print(f"Sheet fetch failed: {e}")
-        return None
+            if "<!DOCTYPE html>" in r.text[:300] or "Sign in" in r.text[:800]:
+                print("Sheet returned HTML login page (not public) - trying next URL")
+                continue
+            r.raise_for_status()
+            text = r.text
+            reader = csv.DictReader(io.StringIO(text))
+            if not reader.fieldnames:
+                print("No fieldnames in CSV - trying next")
+                continue
+            print(f"Headers: {reader.fieldnames}")
+            quiz = []
+            for idx, row in enumerate(reader):
+                q_text = (row.get('Question') or '').strip()
+                if not q_text:
+                    continue
+                opts = [
+                    (row.get('Option A') or '').strip(),
+                    (row.get('Option B') or '').strip(),
+                    (row.get('Option C') or '').strip(),
+                    (row.get('Option D') or '').strip(),
+                    (row.get('Option E') or '').strip(),
+                ]
+                opts = [o for o in opts if o]
+                if len(opts) < 2:
+                    continue
+                ans_letter = (row.get('Correct Answer (A/B/C/D/E)') or row.get('Correct Answer') or 'A').strip().upper()
+                ans_map = {'A':0,'B':1,'C':2,'D':3,'E':4}
+                ans = ans_map.get(ans_letter[0], 0) if ans_letter else 0
+                if ans >= len(opts):
+                    ans = 0
+                q_id = (row.get('Question ID') or f"Q{idx+1:04d}").strip()
+                chapter = (row.get('Chapter') or 'General').strip()
+                topic = (row.get('Topic') or 'General').strip()
+                subtopic = (row.get('Subtopic') or topic).strip()
+                knowledge_nodes = (row.get('Knowledge Nodes') or topic).strip()
+                difficulty = (row.get('Difficulty') or 'Medium').strip()
+                solution = (row.get('Solution') or row.get('Explanation') or '').strip()
+                solution_link = (row.get('Solution Link') or '').strip()
+                video_title = (row.get('Video Title') or '').strip()
+                quiz.append({
+                    "id": q_id,
+                    "q": q_text,
+                    "opts": opts,
+                    "ans": ans,
+                    "chapter": chapter,
+                    "topic": topic,
+                    "subtopic": subtopic,
+                    "knowledge_nodes": knowledge_nodes,
+                    "difficulty": difficulty,
+                    "solution": solution,
+                    "solution_link": solution_link,
+                    "video_title": video_title,
+                })
+            print(f"Loaded {len(quiz)} Qs from sheet via {csv_url[:50]}")
+            if quiz:
+                return quiz
+        except Exception as e:
+            print(f"Fetch attempt failed for {csv_url[:50]}: {e}")
+            continue
+    print("All sheet URLs failed - sheet is PRIVATE or not shared. Using FALLBACK. FIX: Share sheet as Anyone with link Viewer")
+    return None
 
 def get_quiz():
     q = fetch_questions_extended()
     if q and len(q) >= 1:
         return q
-    # Fallback
+    print("Using FALLBACK quiz")
     return [
-        {"id":"Q0001","q":"SI on 15k for 2yr @10% is 3000. What is CI?","opts":["₹3150","₹3300","₹3225","₹3000","₹3100"],"ans":0,"chapter":"SI & CI","topic":"Interest","subtopic":"CI","knowledge_nodes":"SI,CI","difficulty":"Medium","solution":"CI = 3150","solution_link":"","video_title":""},
-        {"id":"Q0002","q":"25 x 25 =?","opts":["500","625","600","650","525"],"ans":1,"chapter":"Arithmetic","topic":"Squares","subtopic":"Squares","knowledge_nodes":"Squares","difficulty":"Easy","solution":"625","solution_link":"","video_title":""},
+        {"id":"Q0001","q":"SI on 15k for 2yr @10% is 3000. What is CI?","opts":["₹3150","₹3300","₹3225","₹3000","₹3100"],"ans":0,"chapter":"SI & CI","topic":"Interest","subtopic":"CI","knowledge_nodes":"SI,CI","difficulty":"Medium","solution":"CI = P(1+R/100)^T - P = 15000*1.1^2 -15000 = 3150","solution_link":"","video_title":""},
+        {"id":"Q0002","q":"25 x 25 =?","opts":["500","625","600","650","525"],"ans":1,"chapter":"Arithmetic","topic":"Squares","subtopic":"Squares","knowledge_nodes":"Squares","difficulty":"Easy","solution":"25*25=625","solution_link":"","video_title":""},
+        {"id":"Q0003","q":"Speed 60km/h for 2.5hr =?","opts":["120km","150km","180km","100km","200km"],"ans":1,"chapter":"TSD","topic":"Distance","subtopic":"Formula","knowledge_nodes":"Speed,Distance","difficulty":"Easy","solution":"D=S*T=60*2.5=150km","solution_link":"","video_title":""},
     ]
 
 def get_q_caption(q_idx, elapsed, total):
     mins = int(elapsed // 60)
     secs = int(elapsed % 60)
-    return f"Q{q_idx+1}/{total} ⏱ {mins}:{secs:02d}"
+    return f"Q{q_idx+1}/{total} ⏱ {mins}:{secs:02d} | Vidyashala"
+
+def safe_paste(base_img, logo, pos):
+    try:
+        # logo is RGBA, base is RGB - need to handle mask
+        if logo.mode == 'RGBA':
+            base_img.paste(logo, pos, logo)
+        else:
+            base_img.paste(logo, pos)
+    except Exception as e:
+        print(f"Paste failed: {e}")
+        try:
+            base_img.paste(logo, pos)
+        except:
+            pass
 
 def generate_launch_card():
-    W,H = 1080,1350
-    img = Image.new("RGB", (W,H), BRAND["NAVY"])
-    draw = ImageDraw.Draw(img)
     try:
-        logo = get_embedded_logo(180)
-        img.paste(logo, (W//2-90, 250), logo, logo)
-    except: pass
-    draw.text((W//2, 500), "VIDYASHALA", fill=BRAND["WHITE"], font=load_font(64, True), anchor="mm")
-    draw.text((W//2, 560), "DIAGNOSTIC TEST", fill=BRAND["YELLOW"], font=load_font(36, True), anchor="mm")
-    draw.text((W//2, 650), "Telegram Only • YT Solutions • Analytics", fill=BRAND["GRAY"], font=load_font(24, False), anchor="mm")
-    buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
+        W,H = 1080,1350
+        img = Image.new("RGB", (W,H), BRAND["NAVY"])
+        draw = ImageDraw.Draw(img)
+        try:
+            logo = get_embedded_logo(180)
+            safe_paste(img, logo, (W//2-90, 250))
+        except Exception as e:
+            print(f"Logo paste fail launch: {e}")
+        draw.text((W//2, 500), "VIDYASHALA", fill=BRAND["WHITE"], font=load_font(64, True), anchor="mm")
+        draw.text((W//2, 560), "DIAGNOSTIC TEST", fill=BRAND["YELLOW"], font=load_font(36, True), anchor="mm")
+        draw.text((W//2, 650), "Telegram Only • YT Solutions", fill=BRAND["GRAY"], font=load_font(24, False), anchor="mm")
+        buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
+    except Exception as e:
+        print(f"Launch card fail: {e}")
+        img = Image.new("RGB", (1080,1080), BRAND["NAVY"])
+        draw = ImageDraw.Draw(img)
+        draw.text((540,540), "VIDYASHALA", fill=BRAND["WHITE"], font=load_font(40, True), anchor="mm")
+        buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
 
 def generate_question_card(q_idx, total, question, opts):
-    W,H = 1080,1350
-    img = Image.new("RGB", (W,H), BRAND["NAVY"])
-    draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle((60,40,260,100), radius=20, fill=BRAND["YELLOW"])
-    draw.text((160,70), f"Q{q_idx+1}/{total}", fill=BRAND["NAVY"], font=load_font(24, True), anchor="mm")
-    draw.rounded_rectangle((W-260,40,W-60,100), radius=20, fill=BRAND["YELLOW"])
-    draw.text((W-160,70), "LIVE TIMER", fill=BRAND["NAVY"], font=load_font(20, True), anchor="mm")
-    # Logo small
     try:
-        logo = get_embedded_logo(80)
-        img.paste(logo, (W//2-40, 160), logo)
-    except: pass
-    f_q = load_font(38, True)
-    words = question.split(); lines=[]; cur=""
-    for w in words:
-        test = cur+" "+w if cur else w
-        if draw.textlength(test, font=f_q) < W-120:
-            cur=test
-        else:
-            lines.append(cur); cur=w
-    if cur: lines.append(cur)
-    y=300
-    for line in lines[:4]:
-        draw.text((W//2, y), line, fill=BRAND["WHITE"], font=f_q, anchor="mm"); y+=50
-    y+=20
-    f_opt=load_font(32, True)
-    y_opt=y
-    for i,opt in enumerate(opts[:5]):
-        if not opt: continue
-        draw.rounded_rectangle((80,y_opt,W-80,y_opt+75), radius=18, fill=BRAND["WHITE"])
-        draw.rounded_rectangle((80,y_opt,160,y_opt+75), radius=18, fill=BRAND["YELLOW"])
-        draw.text((120, y_opt+37), chr(65+i), fill=BRAND["NAVY"], font=load_font(28, True), anchor="mm")
-        draw.text((180, y_opt+37), str(opt)[:40], fill=BRAND["NAVY"], font=f_opt, anchor="lm")
-        y_opt+=90
-    buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
+        W,H = 1080,1350
+        img = Image.new("RGB", (W,H), BRAND["NAVY"])
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle((60,40,260,100), radius=20, fill=BRAND["YELLOW"])
+        draw.text((160,70), f"Q{q_idx+1}/{total}", fill=BRAND["NAVY"], font=load_font(24, True), anchor="mm")
+        draw.rounded_rectangle((W-260,40,W-60,100), radius=20, fill=BRAND["YELLOW"])
+        draw.text((W-160,70), "LIVE TIMER", fill=BRAND["NAVY"], font=load_font(20, True), anchor="mm")
+        try:
+            logo = get_embedded_logo(80)
+            safe_paste(img, logo, (W//2-40, 160))
+        except: pass
+        f_q = load_font(38, True)
+        words = question.split(); lines=[]; cur=""
+        for w in words:
+            test = cur+" "+w if cur else w
+            if draw.textlength(test, font=f_q) < W-120:
+                cur=test
+            else:
+                lines.append(cur); cur=w
+        if cur: lines.append(cur)
+        y=300
+        for line in lines[:4]:
+            draw.text((W//2, y), line, fill=BRAND["WHITE"], font=f_q, anchor="mm"); y+=50
+        y+=20
+        f_opt=load_font(32, True)
+        y_opt=y
+        for i,opt in enumerate(opts[:5]):
+            if not opt: continue
+            draw.rounded_rectangle((80,y_opt,W-80,y_opt+75), radius=18, fill=BRAND["WHITE"])
+            draw.rounded_rectangle((80,y_opt,160,y_opt+75), radius=18, fill=BRAND["YELLOW"])
+            draw.text((120, y_opt+37), chr(65+i), fill=BRAND["NAVY"], font=load_font(28, True), anchor="mm")
+            draw.text((180, y_opt+37), str(opt)[:40], fill=BRAND["NAVY"], font=f_opt, anchor="lm")
+            y_opt+=90
+        buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
+    except Exception as e:
+        print(f"Question card fail: {e}")
+        import traceback; traceback.print_exc()
+        # Fallback simple card
+        W,H = 1080,1080
+        img = Image.new("RGB", (W,H), BRAND["NAVY"])
+        draw = ImageDraw.Draw(img)
+        draw.text((540,540), question[:80], fill=BRAND["WHITE"], font=load_font(30, True), anchor="mm")
+        buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
 
 def generate_solution_card(q_idx, q_item, user_ans, correctness):
-    W,H = 1080, 1400
-    bg = (21,43,82) if correctness=="incorrect" else (15,23,42)
-    img = Image.new("RGB", (W,H), bg)
-    draw = ImageDraw.Draw(img)
-    color = BRAND["RED"] if correctness in ["incorrect","left"] else BRAND["GREEN"]
-    draw.rectangle((0,0,W,110), fill=color)
-    status = "❌ INCORRECT" if correctness=="incorrect" else "⏭ LEFT" if correctness=="left" else "✅ CORRECT"
-    draw.text((30,55), f"{status} • Q{q_idx+1} • {q_item.get('chapter','')}", fill=BRAND["WHITE"], font=load_font(28, True), anchor="lm")
-    y=150
-    f_q = load_font(28, True)
-    draw.text((30,y), f"Q: {q_item['q'][:90]}", fill=BRAND["WHITE"], font=f_q)
-    y+=50
-    f_a = load_font(26, False)
-    ua = "Not Attempted" if user_ans in [None,-1] else f"{chr(65+user_ans)}: {q_item['opts'][user_ans] if user_ans < len(q_item['opts']) else ''}"
-    ca = f"{chr(65+q_item['ans'])}: {q_item['opts'][q_item['ans']]}"
-    draw.text((30,y), f"Your: {ua}", fill=BRAND["YELLOW"], font=f_a); y+=35
-    draw.text((30,y), f"Correct: {ca}", fill=BRAND["GREEN"], font=f_a); y+=50
-    sol = q_item.get('solution','')[:280]
-    draw.text((30,y), "Solution:", fill=BRAND["WHITE"], font=load_font(26, True)); y+=35
-    words = sol.split(); cur=""; lines=[]
-    for w in words:
-        test = cur+" "+w if cur else w
-        if draw.textlength(test, font=f_a) < W-60:
-            cur=test
-        else:
-            lines.append(cur); cur=w
-    if cur: lines.append(cur)
-    for line in lines[:5]:
-        draw.text((30,y), line, fill=(200,200,200), font=f_a); y+=30
-    y+=15
-    link = q_item.get('solution_link','')
-    if link:
-        draw.rounded_rectangle((30,y,W-30,y+55), radius=12, fill=BRAND["RED"])
-        title = q_item.get('video_title','YT Solution')[:35]
-        draw.text((W//2,y+27), f"🎥 Watch: {title}", fill=BRAND["WHITE"], font=load_font(24, True), anchor="mm")
-        y+=65
-        draw.text((30,y), link[:85], fill=BRAND["YELLOW"], font=load_font(20, False))
-    buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
+    try:
+        W,H = 1080, 1400
+        bg = (21,43,82) if correctness=="incorrect" else (15,23,42)
+        img = Image.new("RGB", (W,H), bg)
+        draw = ImageDraw.Draw(img)
+        color = BRAND["RED"] if correctness in ["incorrect","left"] else BRAND["GREEN"]
+        draw.rectangle((0,0,W,110), fill=color)
+        status = "❌ INCORRECT" if correctness=="incorrect" else "⏭ LEFT" if correctness=="left" else "✅ CORRECT"
+        draw.text((30,55), f"{status} • Q{q_idx+1} • {q_item.get('chapter','')}", fill=BRAND["WHITE"], font=load_font(28, True), anchor="lm")
+        y=150
+        f_q = load_font(28, True)
+        draw.text((30,y), f"Q: {q_item['q'][:90]}", fill=BRAND["WHITE"], font=f_q)
+        y+=50
+        f_a = load_font(26, False)
+        ua = "Not Attempted" if user_ans in [None,-1] else f"{chr(65+user_ans)}: {q_item['opts'][user_ans] if user_ans < len(q_item['opts']) else ''}"
+        ca = f"{chr(65+q_item['ans'])}: {q_item['opts'][q_item['ans']]}"
+        draw.text((30,y), f"Your: {ua}", fill=BRAND["YELLOW"], font=f_a); y+=35
+        draw.text((30,y), f"Correct: {ca}", fill=BRAND["GREEN"], font=f_a); y+=50
+        sol = q_item.get('solution','')[:280]
+        draw.text((30,y), "Solution:", fill=BRAND["WHITE"], font=load_font(26, True)); y+=35
+        words = sol.split(); cur=""; lines=[]
+        for w in words:
+            test = cur+" "+w if cur else w
+            if draw.textlength(test, font=f_a) < W-60:
+                cur=test
+            else:
+                lines.append(cur); cur=w
+        if cur: lines.append(cur)
+        for line in lines[:5]:
+            draw.text((30,y), line, fill=(200,200,200), font=f_a); y+=30
+        y+=15
+        link = q_item.get('solution_link','')
+        if link:
+            draw.rounded_rectangle((30,y,W-30,y+55), radius=12, fill=BRAND["RED"])
+            title = q_item.get('video_title','YT Solution')[:35]
+            draw.text((W//2,y+27), f"🎥 Watch: {title}", fill=BRAND["WHITE"], font=load_font(24, True), anchor="mm")
+            y+=65
+            draw.text((30,y), link[:85], fill=BRAND["YELLOW"], font=load_font(20, False))
+        buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
+    except Exception as e:
+        print(f"Solution card fail: {e}")
+        img = Image.new("RGB", (1080,1080), BRAND["NAVY"])
+        draw = ImageDraw.Draw(img)
+        draw.text((540,540), "Solution", fill=BRAND["WHITE"], font=load_font(30, True), anchor="mm")
+        buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
 
 def generate_final_card(score, total, time_taken, username):
-    W,H = 1080, 1200
-    img = Image.new("RGB", (W,H), BRAND["NAVY"])
-    draw = ImageDraw.Draw(img)
-    draw.rectangle((0,0,W,120), fill=BRAND["YELLOW"])
-    draw.text((40,60), "RESULT • TELEGRAM", fill=BRAND["NAVY"], font=load_font(28, True), anchor="lm")
     try:
-        logo = get_embedded_logo(100)
-        img.paste(logo, (W//2-50, 160), logo, logo)
-    except: pass
-    draw.text((W//2, 320), f"@{username}", fill=BRAND["GRAY"], font=load_font(26, False), anchor="mm")
-    draw.text((W//2, 400), f"{score}/{total}", fill=BRAND["WHITE"], font=load_font(90, True), anchor="mm")
-    draw.text((W//2, 480), f"{score/total*100:.1f}% Accuracy", fill=BRAND["GREEN"], font=load_font(34, True), anchor="mm")
-    draw.text((W//2, 530), f"Time: {time_taken:.1f}s • Avg {(time_taken/total):.1f}s/Q", fill=BRAND["GRAY"], font=load_font(26, False), anchor="mm")
-    buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
+        W,H = 1080, 1200
+        img = Image.new("RGB", (W,H), BRAND["NAVY"])
+        draw = ImageDraw.Draw(img)
+        draw.rectangle((0,0,W,120), fill=BRAND["YELLOW"])
+        draw.text((40,60), "RESULT • TELEGRAM", fill=BRAND["NAVY"], font=load_font(28, True), anchor="lm")
+        try:
+            logo = get_embedded_logo(100)
+            safe_paste(img, logo, (W//2-50, 160))
+        except: pass
+        draw.text((W//2, 320), f"@{username}", fill=BRAND["GRAY"], font=load_font(26, False), anchor="mm")
+        draw.text((W//2, 400), f"{score}/{total}", fill=BRAND["WHITE"], font=load_font(90, True), anchor="mm")
+        draw.text((W//2, 480), f"{score/total*100:.1f}% Accuracy", fill=BRAND["GREEN"], font=load_font(34, True), anchor="mm")
+        draw.text((W//2, 530), f"Time: {time_taken:.1f}s • Avg {(time_taken/total):.1f}s/Q", fill=BRAND["GRAY"], font=load_font(26, False), anchor="mm")
+        buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
+    except Exception as e:
+        print(f"Final card fail: {e}")
+        img = Image.new("RGB", (1080,1080), BRAND["NAVY"])
+        draw = ImageDraw.Draw(img)
+        draw.text((540,540), f"{score}/{total}", fill=BRAND["WHITE"], font=load_font(40, True), anchor="mm")
+        buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
 
 def live_updater(uid, total):
     while active_timers.get(uid):
@@ -262,49 +326,69 @@ def live_updater(uid, total):
                 if opt:
                     markup.add(InlineKeyboardButton(f"{chr(65+i)} : {opt}", callback_data=f"ans_{cur}_{i}"))
             bot.edit_message_caption(caption=get_q_caption(cur, elapsed, total), chat_id=chat_id, message_id=msg_id, reply_markup=markup)
-        except: pass
+        except Exception as e:
+            # print(f"live updater err {e}")
+            pass
         time.sleep(0.8)
 
 def send_question(uid, q_idx):
-    quiz = get_quiz()
-    sessions[uid]['cur']=q_idx; sessions[uid]['start']=time.time(); active_timers[uid]=True
-    total=len(quiz); q=quiz[q_idx]
-    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-    markup=InlineKeyboardMarkup(row_width=1)
-    for i,opt in enumerate(q['opts']):
-        if opt: markup.add(InlineKeyboardButton(f"{chr(65+i)} : {opt}", callback_data=f"ans_{q_idx}_{i}"))
-    card=generate_question_card(q_idx,total,q['q'],q['opts'])
-    msg=bot.send_photo(uid, card, caption=get_q_caption(q_idx,0.0,total), reply_markup=markup)
-    timer_msg[uid]=(msg.chat.id, msg.message_id)
-    threading.Thread(target=live_updater, args=(uid,total), daemon=True).start()
+    try:
+        quiz = get_quiz()
+        if q_idx >= len(quiz):
+            auto_submit_quiz(uid)
+            return
+        sessions[uid]['cur']=q_idx; sessions[uid]['start']=time.time(); active_timers[uid]=True
+        total=len(quiz); q=quiz[q_idx]
+        from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+        markup=InlineKeyboardMarkup(row_width=1)
+        for i,opt in enumerate(q['opts']):
+            if opt: markup.add(InlineKeyboardButton(f"{chr(65+i)} : {opt}", callback_data=f"ans_{q_idx}_{i}"))
+        card=generate_question_card(q_idx,total,q['q'],q['opts'])
+        msg=bot.send_photo(uid, card, caption=get_q_caption(q_idx,0.0,total), reply_markup=markup)
+        timer_msg[uid]=(msg.chat.id, msg.message_id)
+        threading.Thread(target=live_updater, args=(uid,total), daemon=True).start()
+    except Exception as e:
+        print(f"send_question fail: {e}")
+        import traceback; traceback.print_exc()
+        bot.send_message(uid, f"Error sending Q{q_idx+1}: {e}")
 
 def send_start_screen(uid):
-    quiz=get_quiz()
-    txt=f"DIAGNOSTIC READY ({len(quiz)} Qs) • Time based • YT Solutions"
-    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-    markup=InlineKeyboardMarkup().add(InlineKeyboardButton("TAP TO START THE TEST 🚀", callback_data="start_test"))
-    card=generate_launch_card()
-    bot.send_photo(uid, card, caption=txt, reply_markup=markup)
+    try:
+        quiz=get_quiz()
+        txt=f"DIAGNOSTIC READY ({len(quiz)} Qs) • Time based • YT Solutions\nSheet: {SHEET_ID}"
+        from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+        markup=InlineKeyboardMarkup().add(InlineKeyboardButton("TAP TO START THE TEST 🚀", callback_data="start_test"))
+        card=generate_launch_card()
+        bot.send_photo(uid, card, caption=txt, reply_markup=markup)
+    except Exception as e:
+        print(f"start_screen fail: {e}")
+        import traceback; traceback.print_exc()
+        bot.send_message(uid, f"Ready! {len(get_quiz())} Qs. Tap below:", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("START", callback_data="start_test")))
 
 def send_next(uid, next_idx):
-    time.sleep(1.2); quiz=get_quiz()
-    if next_idx < len(quiz):
-        send_question(uid, next_idx)
-    else:
-        sess=sessions[uid]
-        total=sum(1 for i,a in enumerate(sess['answers']) if a==quiz[i]['ans'])
-        bot.send_message(uid, f"SCORE {total}/{len(quiz)}")
+    time.sleep(1.2)
+    try:
+        quiz=get_quiz()
+        if next_idx < len(quiz):
+            send_question(uid, next_idx)
+        else:
+            auto_submit_quiz(uid)
+    except Exception as e:
+        print(f"send_next fail: {e}")
         auto_submit_quiz(uid)
 
 def auto_submit_quiz(uid):
     try:
         sess=sessions.get(uid)
-        if not sess: return
+        if not sess: 
+            print("No session in auto_submit")
+            return
         active_timers[uid]=False
         quiz=sess['quiz']; answers=sess['answers']; times=sess['times']
         username=sess.get('username','User')
         total_correct=sum(1 for i,a in enumerate(answers) if a==quiz[i]['ans'])
         total_time=sum(times)
+        print(f"Quiz done {username}: {total_correct}/{len(quiz)}")
         card=generate_final_card(total_correct, len(quiz), total_time, username)
         from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
         markup=InlineKeyboardMarkup(row_width=2)
@@ -315,21 +399,43 @@ def auto_submit_quiz(uid):
         result_msg[uid]=(msg.chat.id, msg.message_id, quiz, answers, times)
     except Exception as e:
         print(f"auto_submit err {e}")
+        import traceback; traceback.print_exc()
+        try:
+            bot.send_message(uid, f"Quiz completed! Score: {total_correct if 'total_correct' in locals() else '?' }/{len(quiz) if 'quiz' in locals() else '?'}")
+        except: pass
 
 if bot:
-    @bot.message_handler(commands=['start'])
+    @bot.message_handler(commands=['start', 'test'])
     def handle_start(message):
-        uid=message.from_user.id
-        username=message.from_user.username or f"user{uid}"
-        quiz=get_quiz()
-        sessions[uid]={"quiz":quiz,"answers":[None]*len(quiz),"times":[0]*len(quiz),"cur":0,"start":time.time(),"username":username,"quiz_id":f"QZ{int(time.time())}_{uid}"}
-        send_start_screen(uid)
+        try:
+            uid=message.from_user.id
+            username=message.from_user.username or f"user{uid}"
+            print(f"/start from {uid} @{username}: {message.text}")
+            quiz=get_quiz()
+            print(f"Quiz for {username}: {len(quiz)} Qs")
+            sessions[uid]={"quiz":quiz,"answers":[None]*len(quiz),"times":[0]*len(quiz),"cur":0,"start":time.time(),"username":username,"quiz_id":f"QZ{int(time.time())}_{uid}"}
+            send_start_screen(uid)
+        except Exception as e:
+            print(f"handle_start fail: {e}")
+            import traceback; traceback.print_exc()
+            try:
+                bot.send_message(message.chat.id, f"Error in /start: {e}")
+            except: pass
+
+    @bot.message_handler(commands=['health'])
+    def handle_health(message):
+        try:
+            quiz=get_quiz()
+            bot.send_message(message.chat.id, f"✅ Bot OK\nSheet: {SHEET_ID}\nQs: {len(quiz)}\nBot token: {'set' if BOT_TOKEN else 'missing'}\nRender URL: {RENDER_URL or 'not set (polling mode)'}")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"Health check fail: {e}")
 
     @bot.callback_query_handler(func=lambda call: True)
     def handle_callback(call):
         try:
             uid=call.from_user.id
             data=call.data
+            print(f"Callback {uid}: {data}")
             if data=="start_test":
                 quiz=get_quiz()
                 sessions[uid]={"quiz":quiz,"answers":[None]*len(quiz),"times":[0]*len(quiz),"cur":0,"start":time.time(),"username":call.from_user.username or f"user{uid}","quiz_id":f"QZ{int(time.time())}_{uid}"}
@@ -340,7 +446,9 @@ if bot:
             elif data.startswith("ans_"):
                 _,q_idx,opt_idx=data.split("_"); q_idx,opt_idx=int(q_idx),int(opt_idx)
                 sess=sessions.get(uid)
-                if not sess or sess['cur']!=q_idx: return
+                if not sess or sess['cur']!=q_idx: 
+                    print(f"Session mismatch for {uid}")
+                    return
                 sess['answers'][q_idx]=opt_idx
                 sess['times'][q_idx]=time.time()-sess['start']
                 active_timers[uid]=False
@@ -350,14 +458,15 @@ if bot:
                 send_next(uid, q_idx+1)
             elif data=="view_solutions":
                 if uid not in result_msg:
-                    bot.answer_callback_query(call.id, "No results")
+                    bot.answer_callback_query(call.id, "No results - retake quiz")
                     return
                 _,_,quiz,answers,_ = result_msg[uid]
                 wrong=[i for i,a in enumerate(answers) if a is None or a!=quiz[i]['ans']]
                 if not wrong:
-                    bot.send_message(uid, "🎉 All correct!")
+                    bot.send_message(uid, "🎉 All correct! No solutions needed.")
+                    bot.answer_callback_query(call.id, "All correct!")
                     return
-                bot.send_message(uid, f"📚 Solutions for {len(wrong)} Qs")
+                bot.send_message(uid, f"📚 Solutions for {len(wrong)} Qs (showing max 10)")
                 for q_idx in wrong[:10]:
                     q_item=quiz[q_idx]
                     user_ans=answers[q_idx]
@@ -368,12 +477,12 @@ if bot:
                     link=q_item.get('solution_link','')
                     if link and 'http' in link:
                         markup.add(InlineKeyboardButton("🎥 Watch YT Solution", url=link))
-                    bot.send_photo(uid, card, caption=f"Q{q_idx+1} • {q_item.get('chapter','')} • {link}", reply_markup=markup if link else None)
-                bot.answer_callback_query(call.id, "Solutions sent!")
+                    bot.send_photo(uid, card, caption=f"Q{q_idx+1} • {q_item.get('chapter','')} • {link[:60]}", reply_markup=markup if link else None)
+                bot.answer_callback_query(call.id, f"Sent {min(10,len(wrong))} solutions!")
             elif data=="get_analysis":
                 sess=sessions.get(uid)
                 if not sess:
-                    bot.answer_callback_query(call.id, "No session")
+                    bot.answer_callback_query(call.id, "No session - start new quiz")
                     return
                 quiz=sess['quiz']; answers=sess['answers']
                 total=sum(1 for i,a in enumerate(answers) if a==quiz[i]['ans'])
@@ -385,14 +494,32 @@ if bot:
                 bot.answer_callback_query(call.id, "Analysis sent!")
         except Exception as e:
             print(f"callback err {e}")
+            import traceback; traceback.print_exc()
+            try:
+                bot.answer_callback_query(call.id, f"Error: {e}")
+            except: pass
 
 @app.route('/')
 def home():
-    return f"Vidyashala Telegram-Only OK | Sheet: {SHEET_ID} | FB: PAUSED | Quiz: {len(get_quiz())} Qs | <a href='https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit'>Open Sheet</a>"
+    try:
+        q_len = len(get_quiz())
+    except:
+        q_len = "error"
+    return f"Vidyashala Telegram-Only OK | Sheet: {SHEET_ID} | FB: PAUSED | Quiz: {q_len} Qs | Bot: {'OK' if bot else 'NO TOKEN'} | <a href='https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit'>Open Sheet</a> | <a href='/health'>Health</a>"
+
+@app.route('/health')
+def health():
+    try:
+        quiz = get_quiz()
+        return {"status":"ok","sheet_id":SHEET_ID,"quiz_count":len(quiz),"bot": bool(bot), "render_url": RENDER_URL or "polling"}
+    except Exception as e:
+        return {"status":"error","error":str(e)}
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if not bot: return 'bot disabled', 200
+    if not bot: 
+        print("webhook called but bot disabled")
+        return 'bot disabled', 200
     if request.headers.get('content-type')=='application/json':
         json_string=request.get_data().decode('utf-8')
         try:
@@ -401,42 +528,58 @@ def webhook():
             bot.process_new_updates([update])
         except Exception as e:
             print(f"Webhook error {e}")
+            import traceback; traceback.print_exc()
         return '',200
     else:
         abort(403)
 
 def setup_webhook():
-    if not bot or not RENDER_URL: return False
+    if not bot or not RENDER_URL: 
+        print("setup_webhook skipped: bot or RENDER_URL missing")
+        return False
     try:
         bot.delete_webhook()
         time.sleep(1)
         url=RENDER_URL.rstrip('/')+'/webhook'
-        bot.set_webhook(url=url, drop_pending_updates=True)
-        print(f"Webhook set to {url}")
+        result = bot.set_webhook(url=url, drop_pending_updates=True)
+        print(f"Webhook set to {url} -> {result}")
         return True
     except Exception as e:
         print(f"Webhook fail {e}")
+        import traceback; traceback.print_exc()
         return False
 
 def run_polling():
-    if not bot or RENDER_URL: return
+    if not bot: 
+        print("run_polling: bot missing")
+        return
+    print("Starting polling mode...")
     while True:
         try:
             bot.delete_webhook(drop_pending_updates=True)
             time.sleep(2)
             bot.infinity_polling(timeout=10, long_polling_timeout=10)
         except Exception as e:
-            print(f"Polling err {e}"); time.sleep(5)
+            print(f"Polling err {e}")
+            import traceback; traceback.print_exc()
+            time.sleep(5)
 
 if bot:
     if RENDER_URL:
         def init_webhook():
             time.sleep(3)
-            setup_webhook()
+            success = setup_webhook()
+            if not success:
+                print("Webhook failed, falling back to polling!")
+                run_polling()
         threading.Thread(target=init_webhook, daemon=True).start()
     else:
+        print("No RENDER_URL, using polling")
         threading.Thread(target=run_polling, daemon=True).start()
+else:
+    print("Bot not initialized - check BOT_TOKEN")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
+    print(f"Starting Flask on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port)

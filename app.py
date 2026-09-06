@@ -257,8 +257,7 @@ def generate_launch_card():
     buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
 
 def generate_question_card_premium(q_idx, total, question):
-    # NEW LOOK: Only question + OPTIONS TAB (A-E only, no answer text) + yellow progress bar + new logo everywhere
-    W,H = 1080, 1350
+    W,H = 1080, 1250
     img = Image.new("RGB", (W,H), BRAND["NAVY"])
     img = add_glow(img, 950, 150, 240, color=(255,193,7), intensity=20)
     img = add_glow(img, 150, 1100, 320, color=(11,61,179), intensity=16)
@@ -276,14 +275,14 @@ def generate_question_card_premium(q_idx, total, question):
     draw.rounded_rectangle((130,35,320,85), radius=16, fill=BRAND["YELLOW"])
     draw.text((225,60), f"Q {q_idx+1} / {total}", fill=BRAND["NAVY"], font=load_font(19, True), anchor="mm")
     draw.text((W-50, 60), "BANKING | INSURANCE", fill=BRAND["YELLOW"], font=load_font(13, True), anchor="rm")
-    cx,cy = W//2, 210
-    img = add_glow(img, cx, cy, 80, color=(255,193,7), intensity=22)
+    cx,cy = W//2, 240
+    img = add_glow(img, cx, cy, 90, color=(255,193,7), intensity=22)
     draw = ImageDraw.Draw(img)
-    draw.ellipse((cx-75, cy-65, cx+75, cy+75), fill=(0,0,0,50))
-    big_logo = get_embedded_logo(130)
-    safe_paste(img, big_logo, (cx-65, cy-65))
-    q_box_y = 310
-    q_box_h = 520
+    draw.ellipse((cx-85, cy-75, cx+85, cy+85), fill=(0,0,0,50))
+    big_logo = get_embedded_logo(160)
+    safe_paste(img, big_logo, (cx-80, cy-80))
+    q_box_y = 360
+    q_box_h = 680
     draw.rounded_rectangle((52+8, q_box_y+8, W-48+8, q_box_y+q_box_h+8), radius=28, fill=(0,0,0,40))
     draw.rounded_rectangle((52+4, q_box_y+4, W-48+4, q_box_y+q_box_h+4), radius=28, fill=(0,0,0,60))
     img = add_glow(img, W//2, q_box_y+q_box_h//2, 320, color=(255,193,7), intensity=14)
@@ -291,7 +290,7 @@ def generate_question_card_premium(q_idx, total, question):
     draw.rounded_rectangle((50, q_box_y, W-50, q_box_y+q_box_h), radius=28, fill=BRAND["WHITE"])
     draw.rounded_rectangle((50, q_box_y, 50+12, q_box_y+q_box_h), radius=6, fill=BRAND["YELLOW"])
     draw.rounded_rectangle((62, q_box_y+2, W-52, q_box_y+22), radius=12, fill=(255,255,255,200))
-    f_q = load_font(30, True)
+    f_q = load_font(32, True)
     words = question.split()
     lines = []
     cur = ""
@@ -304,33 +303,34 @@ def generate_question_card_premium(q_idx, total, question):
             cur = w
     if cur: lines.append(cur)
     y = q_box_y+50
-    if len(lines) > 6:
-        lines = lines[:6]
+    if len(lines) > 7:
+        lines = lines[:7]
         lines[-1] = lines[-1][:58] + "..."
     for line in lines:
         draw.text((95, y), line, fill=BRAND["NAVY"], font=f_q, anchor="lm")
-        y += 52
-    # OPTIONS TAB - FIXED: Present on card, only A,B,C,D,E (no answer text)
-    y_opt = q_box_y + q_box_h + 20
-    for i in range(5):
-        x1,y1 = 50, y_opt
-        x2,y2 = W-50, y_opt+65
-        draw.rounded_rectangle((x1+4, y1+4, x2+4, y2+4), radius=16, fill=(0,0,0,50))
-        draw.rounded_rectangle((x1, y1, x2, y2), radius=16, fill=BRAND["WHITE"])
-        draw.rounded_rectangle((x1, y1, x1+85, y2), radius=16, fill=BRAND["YELLOW"])
-        draw.text((x1+42, y1+32), chr(65+i), fill=BRAND["NAVY"], font=load_font(28, True), anchor="mm")
-        draw.text((x1+105, y1+32), f"Option {chr(65+i)}", fill=BRAND["GRAY"], font=load_font(20, False), anchor="lm")
-        y_opt+=75
-    # Yellow progress bar at bottom - premium timer bar
-    bar_y = y_opt + 15
-    progress = (q_idx+1)/total
-    bar_w = int((W-100)*progress)
-    draw.rounded_rectangle((50, bar_y, W-50, bar_y+12), radius=6, fill=(255,255,255,25))
-    draw.rounded_rectangle((50, bar_y, 50+bar_w, bar_y+12), radius=6, fill=BRAND["YELLOW"])
-    draw.text((W//2, bar_y+35), f"Choose from buttons below • Q{q_idx+1}/{total} • Timer: 20 tiny pieces", fill=(255,255,255,120), font=load_font(13, True), anchor="mm")
+        y += 56
+    img = add_glow(img, W//2, q_box_y+590, 90, color=(255,193,7), intensity=20)
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle((W//2-180+4, q_box_y+560+4, W//2+180+4, q_box_y+605+4), radius=20, fill=(0,0,0,60))
+    draw.rounded_rectangle((W//2-180, q_box_y+560, W//2+180, q_box_y+605), radius=20, fill=BRAND["YELLOW"])
+    draw.text((W//2, q_box_y+582), "Select option below • Premium", fill=BRAND["NAVY"], font=load_font(17, True), anchor="mm")
+    dots_y = q_box_y+q_box_h+30
+    dot_gap = 28
+    total_w = total*dot_gap
+    start_x = W//2 - total_w//2
+    for i in range(total):
+        cx_dot = start_x + i*dot_gap + 10
+        if i == q_idx:
+            img = add_glow(img, cx_dot, dots_y, 12, color=(255,193,7), intensity=35)
+            draw = ImageDraw.Draw(img)
+            draw.ellipse((cx_dot-10, dots_y-10, cx_dot+10, dots_y+10), fill=BRAND["YELLOW"])
+        else:
+            draw.ellipse((cx_dot-7, dots_y-7, cx_dot+7, dots_y+7), fill=(255,255,255, 80))
     tiny = get_embedded_logo(26)
     safe_paste(img, tiny, (W-75, H-45))
+    draw.text((W//2, H-20), "VIDYASHALA • Carousel Style • Yellow Glow", fill=(255,255,255,110), font=load_font(11, True), anchor="mm")
     buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
+
 
 def generate_question_result_card(q_idx, quiz, answers, q_times, best_times):
     W,H = 1080, 1380
@@ -639,7 +639,7 @@ def overall_timer_loop(uid):
                 if 0 < time_spent < 5:
                     sess['q_times'][sess['current_q']] += time_spent
                 sess['last_entry'] = now
-            if now - last_bar_update >= 2:
+            if now - last_bar_update >= 3:
                 chat_id = sess.get('msg_chat_id')
                 msg_id = sess.get('msg_id')
                 if chat_id and msg_id and bot:
@@ -856,14 +856,20 @@ if bot:
                 if uid in attempted_users: return
                 sess['answers'][q_idx] = opt_idx
                 save_sessions()
+                bot.answer_callback_query(call.id, f"Selected {chr(65+opt_idx)}")
+                # FIXED: Auto-move to next question immediately - no refresh, no staying
                 if sess['current_q'] == q_idx:
-                    caption = build_quiz_caption(uid)
-                    keyboard = build_quiz_keyboard(uid)
-                    try:
-                        bot.edit_message_caption(caption=caption, chat_id=sess['msg_chat_id'], message_id=sess['msg_id'], reply_markup=keyboard)
-                    except: pass
-                bot.answer_callback_query(call.id, f"Selected {chr(65+opt_idx)} - Auto next disabled, use Next")
-            except: pass
+                    if q_idx < len(sess['quiz'])-1:
+                        show_question(uid, q_idx+1, edit=True)
+                    else:
+                        # Last question - stay but update buttons to show selected
+                        caption = build_quiz_caption(uid)
+                        keyboard = build_quiz_keyboard(uid)
+                        try:
+                            bot.edit_message_caption(caption=caption, chat_id=sess['msg_chat_id'], message_id=sess['msg_id'], reply_markup=keyboard)
+                        except: pass
+            except Exception as e:
+                print(f"ans error {e}")
         elif data == "submit_test":
             from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
             markup = InlineKeyboardMarkup()

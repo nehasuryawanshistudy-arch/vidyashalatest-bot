@@ -532,7 +532,6 @@ def build_quiz_caption(uid, elapsed_override=None, remaining_override=None):
     if answers[q_idx] is not None and answers[q_idx] != -1:
         opt = quiz[q_idx]['opts'][answers[q_idx]]
         caption += f"✏ {chr(65+answers[q_idx])}. {opt[:32]}\n"
-    caption += "👇 Yellow bar = tiny pieces • 20 pieces"
     return caption
 
 def build_quiz_keyboard(uid, elapsed_override=None, remaining_override=None):
@@ -543,23 +542,7 @@ def build_quiz_keyboard(uid, elapsed_override=None, remaining_override=None):
     answers = sess['answers']
     current_q = sess['current_q']
     q_idx = current_q
-    if elapsed_override is not None:
-        elapsed = elapsed_override
-    else:
-        elapsed = time.time() - sess.get('start_time', time.time())
-    progress = min(max(elapsed / TOTAL_QUIZ_TIME, 0.0), 1.0)
-    SEGMENTS = 20
-    filled = int(progress * SEGMENTS)
-    markup = InlineKeyboardMarkup(row_width=10)
-    bar_pieces = []
-    for i in range(SEGMENTS):
-        if i < filled:
-            txt = "🟨"
-        else:
-            txt = "⬛"
-        bar_pieces.append(InlineKeyboardButton(txt, callback_data="ignore_bar"))
-    markup.row(*bar_pieces[:10])
-    markup.row(*bar_pieces[10:20])
+    markup = InlineKeyboardMarkup(row_width=5)
     palette = []
     for i in range(len(quiz)):
         if i == current_q:
@@ -806,9 +789,6 @@ if bot:
         if data == "start_test_full" or data == "start_test":
             start_new_quiz(uid, username)
             bot.answer_callback_query(call.id, "Started! 20 tiny pieces + options tab")
-        elif data == "ignore_bar":
-            bot.answer_callback_query(call.id, "⏱ Time progress • Dark navy + Yellow")
-            return
         elif data == "continue_quiz":
             sess = sessions.get(uid)
             if not sess: return
@@ -908,7 +888,7 @@ if bot:
 @app.route('/')
 def home():
     mode = "webhook" if RENDER_URL else "polling"
-    return f"Vidyashala - MERGED: New Look Cards + Options Tab + 7min Backend + Segmented Bar + New Logo - mode:{mode}"
+    return f"Vidyashala - MERGED: New Look Cards + Options Tab + 7min Backend + No Progress Bar + New Logo - mode:{mode}"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():

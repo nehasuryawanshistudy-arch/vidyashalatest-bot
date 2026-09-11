@@ -570,7 +570,9 @@ def build_quiz_keyboard(uid, elapsed_override=None, remaining_override=None):
         if len(btn_text) > 32:
             btn_text = btn_text[:29] + "..."
         markup.row(InlineKeyboardButton(btn_text, callback_data=f"ans_{q_idx}_{i}"))
-    markup.row(InlineKeyboardButton("📤 Submit Test • One Attempt", callback_data="submit_test"))
+    # Hide submit after finished
+    if not sess.get('finished') and uid not in attempted_users:
+        markup.row(InlineKeyboardButton("📤 Submit Test • One Attempt", callback_data="submit_test"))
     return markup
 
 def show_question(uid, q_idx, edit=False):
@@ -660,6 +662,14 @@ def auto_submit_quiz(uid):
         if bot and sess.get('timer_chat_id') and sess.get('timer_msg_id'):
             bot.delete_message(sess['timer_chat_id'], sess['timer_msg_id'])
     except: pass
+    # Delete any leftover confirmation dialog with Yes/No buttons
+    try:
+        if bot and sess.get('confirm_chat_id') and sess.get('confirm_msg_id'):
+            bot.delete_message(sess['confirm_chat_id'], sess['confirm_msg_id'])
+    except: pass
+    # Clear confirm ids
+    sess.pop('confirm_chat_id', None)
+    sess.pop('confirm_msg_id', None)
     send_final_results(uid)
 
 def send_final_results(uid):
@@ -852,12 +862,39 @@ if bot:
                 print(f"ans error {e}")
         elif data == "submit_test":
             from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+            sess = sessions.get(uid)
+            if not sess or sess.get('finished'):
+                bot.answer_callback_query(call.id, "Already submitted!")
+                return
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("✅ Yes, Submit Final", callback_data="confirm_submit"))
             markup.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_submit"))
-            bot.send_message(uid, "⚠ Final Submit? One attempt only!", reply_markup=markup)
+            try:
+                confirm_msg = bot.send_message(uid, "⚠ Final Submit? One attempt only!", reply_markup=markup)
+                sess['confirm_chat_id'] = confirm_msg.chat.id
+                sess['confirm_msg_id'] = confirm_msg.message_id
+                save_sessions()
+            except:
+                pass
             bot.answer_callback_query(call.id, "Confirm")
         elif data == "confirm_submit":
+            sess = sessions.get(uid)
+            if sess:
+                # Delete the confirmation dialog immediately so buttons disappear
+                try:
+                    if sess.get('confirm_chat_id') and sess.get('confirm_msg_id'):
+                        bot.delete_message(sess['confirm_chat_id'], sess['confirm_msg_id'])
+                except: pass
+                # Also try to delete the callback message itself if it's the confirm dialog
+                try:
+                    bot.delete_message(call.message.chat.id, call.message.message_id)
+                except: pass
+            # Remove submit button instantly by editing quiz caption keyboard without submit
+            try:
+                if sess and sess.get('msg_chat_id') and sess.get('msg_id'):
+                    # Temporarily remove keyboard to hide submit
+                    bot.edit_message_reply_markup(chat_id=sess['msg_chat_id'], message_id=sess['msg_id'], reply_markup=None)
+            except: pass
             auto_submit_quiz(uid)
             bot.answer_callback_query(call.id, "Submitted!")
         elif data == "cancel_submit":

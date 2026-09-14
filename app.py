@@ -256,8 +256,8 @@ def generate_launch_card():
     draw.text((W//2, 1205), "Premium • Aesthetic • One Attempt Only", fill=BRAND["YELLOW"], font=load_font(14, True), anchor="mm")
     buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
 
-def generate_question_card_premium(q_idx, total, question):
-    W,H = 1080, 1250
+def generate_question_card_premium(q_idx, total, question, time_progress=0.0, q_progress=0.0):
+    W,H = 1080, 1280
     img = Image.new("RGB", (W,H), BRAND["NAVY"])
     img = add_glow(img, 950, 150, 240, color=(255,193,7), intensity=20)
     img = add_glow(img, 150, 1100, 320, color=(11,61,179), intensity=16)
@@ -326,9 +326,29 @@ def generate_question_card_premium(q_idx, total, question):
             draw.ellipse((cx_dot-10, dots_y-10, cx_dot+10, dots_y+10), fill=BRAND["YELLOW"])
         else:
             draw.ellipse((cx_dot-7, dots_y-7, cx_dot+7, dots_y+7), fill=(255,255,255, 80))
+    # === DYNAMIC YELLOW PROGRESS BAR (Time based) ===
+    bar_y = H - 90
+    bar_x1 = 50
+    bar_x2 = W - 50
+    bar_h = 22
+    # background track
+    draw.rounded_rectangle((bar_x1, bar_y, bar_x2, bar_y+bar_h), radius=11, fill=(21,43,82))
+    draw.rounded_rectangle((bar_x1, bar_y, bar_x2, bar_y+bar_h), radius=11, outline=(255,193,7, 80), width=2)
+    # filled yellow portion - time progress
+    prog = max(0.0, min(1.0, time_progress))
+    fill_x2 = bar_x1 + int((bar_x2-bar_x1)*prog)
+    if fill_x2 > bar_x1+4:
+        img = add_glow(img, (bar_x1+fill_x2)//2, bar_y+bar_h//2, 35, color=(255,193,7), intensity=28)
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle((bar_x1, bar_y, fill_x2, bar_y+bar_h), radius=11, fill=BRAND["YELLOW"])
+        # shine
+        draw.rounded_rectangle((bar_x1, bar_y, fill_x2, bar_y+6), radius=6, fill=(255,255,255, 120))
+    # percentage text above bar
+    draw.text((W//2, bar_y-18), f"⏱ {int(prog*100)}% • Q{q_idx+1}/{total}", fill=BRAND["YELLOW"], font=load_font(13, True), anchor="mm")
+
     tiny = get_embedded_logo(26)
-    safe_paste(img, tiny, (W-75, H-45))
-    draw.text((W//2, H-20), "VIDYASHALA • Carousel Style • Yellow Glow", fill=(255,255,255,110), font=load_font(11, True), anchor="mm")
+    safe_paste(img, tiny, (W-75, H-55))
+    draw.text((W//2, H-22), "VIDYASHALA • Dynamic Yellow Bar • Premium", fill=(255,255,255,110), font=load_font(11, True), anchor="mm")
     buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0); return buf
 
 
@@ -527,11 +547,19 @@ def build_quiz_caption(uid, elapsed_override=None, remaining_override=None):
     remaining = max(0, remaining)
     mins = int(remaining // 60)
     secs = int(remaining % 60)
-    caption = f"⏱ {mins:02d}:{secs:02d} LEFT | {int(elapsed/TOTAL_QUIZ_TIME*100)}% • ✅ {answered}/{len(quiz)}\n"
-    caption += f"🧭 Q{q_idx+1}/{len(quiz)} | +1 / -0.25 / 0\n"
+    progress = min(max(elapsed / TOTAL_QUIZ_TIME, 0.0), 1.0)
+    # dynamic yellow text bar - 10 blocks
+    BAR_LEN = 10
+    filled = int(progress * BAR_LEN)
+    bar = "🟨"*filled + "⬛"*(BAR_LEN-filled)
+    caption = f"{bar} {int(progress*100)}% • ⏱ {mins:02d}:{secs:02d} LEFT
+"
+    caption += f"🧭 Q{q_idx+1}/{len(quiz)} | ✅ {answered}/{len(quiz)} | +1 / -0.25 / 0
+"
     if answers[q_idx] is not None and answers[q_idx] != -1:
         opt = quiz[q_idx]['opts'][answers[q_idx]]
-        caption += f"✏ {chr(65+answers[q_idx])}. {opt[:32]}\n"
+        caption += f"✏ {chr(65+answers[q_idx])}. {opt[:32]}
+"
     return caption
 
 def build_quiz_keyboard(uid, elapsed_override=None, remaining_override=None):
@@ -570,9 +598,7 @@ def build_quiz_keyboard(uid, elapsed_override=None, remaining_override=None):
         if len(btn_text) > 32:
             btn_text = btn_text[:29] + "..."
         markup.row(InlineKeyboardButton(btn_text, callback_data=f"ans_{q_idx}_{i}"))
-    # Hide submit after finished
-    if not sess.get('finished') and uid not in attempted_users:
-        markup.row(InlineKeyboardButton("📤 Submit Test • One Attempt", callback_data="submit_test"))
+    markup.row(InlineKeyboardButton("📤 Submit Test • One Attempt", callback_data="submit_test"))
     return markup
 
 def show_question(uid, q_idx, edit=False):
@@ -589,7 +615,10 @@ def show_question(uid, q_idx, edit=False):
     sess['current_q'] = q_idx
     sess['last_entry'] = now
     save_sessions()
-    card = generate_question_card_premium(q_idx, len(quiz), quiz[q_idx]['q'])
+    elapsed_now = time.time() - sess.get('start_time', time.time())
+    prog_now = min(max(elapsed_now / TOTAL_QUIZ_TIME, 0.0), 1.0)
+    q_prog = (q_idx+1)/len(quiz) if len(quiz)>0 else 0
+    card = generate_question_card_premium(q_idx, len(quiz), quiz[q_idx]['q'], time_progress=prog_now, q_progress=q_prog)
     caption = build_quiz_caption(uid)
     keyboard = build_quiz_keyboard(uid)
     try:
@@ -662,14 +691,6 @@ def auto_submit_quiz(uid):
         if bot and sess.get('timer_chat_id') and sess.get('timer_msg_id'):
             bot.delete_message(sess['timer_chat_id'], sess['timer_msg_id'])
     except: pass
-    # Delete any leftover confirmation dialog with Yes/No buttons
-    try:
-        if bot and sess.get('confirm_chat_id') and sess.get('confirm_msg_id'):
-            bot.delete_message(sess['confirm_chat_id'], sess['confirm_msg_id'])
-    except: pass
-    # Clear confirm ids
-    sess.pop('confirm_chat_id', None)
-    sess.pop('confirm_msg_id', None)
     send_final_results(uid)
 
 def send_final_results(uid):
@@ -727,7 +748,7 @@ def start_new_quiz(uid, username):
     }
     sessions[uid] = sess
     try:
-        q_card = generate_question_card_premium(0, len(quiz), quiz[0]['q'])
+        q_card = generate_question_card_premium(0, len(quiz), quiz[0]['q'], time_progress=0.0, q_progress=1/len(quiz) if len(quiz)>0 else 0)
         caption = build_quiz_caption(uid, elapsed_override=0, remaining_override=TOTAL_QUIZ_TIME)
         keyboard = build_quiz_keyboard(uid, elapsed_override=0, remaining_override=TOTAL_QUIZ_TIME)
         msg = bot.send_photo(uid, q_card, caption=caption, reply_markup=keyboard)
@@ -808,7 +829,9 @@ if bot:
                 return
             sess['last_entry'] = time.time()
             elapsed = TOTAL_QUIZ_TIME - remaining
-            q_card = generate_question_card_premium(sess['current_q'], len(sess['quiz']), sess['quiz'][sess['current_q']]['q'])
+            elapsed = time.time() - sess.get('start_time', time.time())
+            prog = min(max(elapsed / TOTAL_QUIZ_TIME, 0.0), 1.0)
+            q_card = generate_question_card_premium(sess['current_q'], len(sess['quiz']), sess['quiz'][sess['current_q']]['q'], time_progress=prog, q_progress=(sess['current_q']+1)/len(sess['quiz']))
             caption = build_quiz_caption(uid, elapsed_override=elapsed, remaining_override=remaining)
             keyboard = build_quiz_keyboard(uid, elapsed_override=elapsed, remaining_override=remaining)
             try:
@@ -862,39 +885,12 @@ if bot:
                 print(f"ans error {e}")
         elif data == "submit_test":
             from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-            sess = sessions.get(uid)
-            if not sess or sess.get('finished'):
-                bot.answer_callback_query(call.id, "Already submitted!")
-                return
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("✅ Yes, Submit Final", callback_data="confirm_submit"))
             markup.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_submit"))
-            try:
-                confirm_msg = bot.send_message(uid, "⚠ Final Submit? One attempt only!", reply_markup=markup)
-                sess['confirm_chat_id'] = confirm_msg.chat.id
-                sess['confirm_msg_id'] = confirm_msg.message_id
-                save_sessions()
-            except:
-                pass
+            bot.send_message(uid, "⚠ Final Submit? One attempt only!", reply_markup=markup)
             bot.answer_callback_query(call.id, "Confirm")
         elif data == "confirm_submit":
-            sess = sessions.get(uid)
-            if sess:
-                # Delete the confirmation dialog immediately so buttons disappear
-                try:
-                    if sess.get('confirm_chat_id') and sess.get('confirm_msg_id'):
-                        bot.delete_message(sess['confirm_chat_id'], sess['confirm_msg_id'])
-                except: pass
-                # Also try to delete the callback message itself if it's the confirm dialog
-                try:
-                    bot.delete_message(call.message.chat.id, call.message.message_id)
-                except: pass
-            # Remove submit button instantly by editing quiz caption keyboard without submit
-            try:
-                if sess and sess.get('msg_chat_id') and sess.get('msg_id'):
-                    # Temporarily remove keyboard to hide submit
-                    bot.edit_message_reply_markup(chat_id=sess['msg_chat_id'], message_id=sess['msg_id'], reply_markup=None)
-            except: pass
             auto_submit_quiz(uid)
             bot.answer_callback_query(call.id, "Submitted!")
         elif data == "cancel_submit":
